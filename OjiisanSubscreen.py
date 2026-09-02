@@ -1,34 +1,179 @@
-import sys, json
-import cv2
+import sys, json, socket, threading, queue, ctypes
 from pathlib import Path
-from PySide6.QtCore import Qt, QTimer, QEvent, QPropertyAnimation, QParallelAnimationGroup
-from PySide6.QtGui import QPixmap, QColor, QPainter, QImage
-from PySide6.QtWidgets import QApplication, QWidget, QLabel, QComboBox, QGraphicsOpacityEffect
+from PySide6.QtCore import (Qt, QTimer, QEvent, QPropertyAnimation,
+                            QParallelAnimationGroup, QUrl, Signal, QObject, QSizeF)
+from PySide6.QtGui import QPixmap, QColor, QPainter
+from PySide6.QtWidgets import (QApplication, QWidget, QLabel, QPushButton,
+                               QListWidget, QGraphicsOpacityEffect,
+                               QGraphicsView, QGraphicsScene, QFrame)
+from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 
-try:
-    import vgamepad as vg
-    GAMEPAD = True
-except Exception:
-    GAMEPAD = False
 
-BUTTON_MAP = {}
-if GAMEPAD:
-    BUTTON_MAP = {
-        "A": vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
-        "B": vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
-        "X": vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
-        "Y": vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
-        "LB": vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
-        "RB": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
-        "BACK": vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK,
-        "START": vg.XUSB_BUTTON.XUSB_GAMEPAD_START,
-        "LS": vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB,
-        "RS": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
-        "UP": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
-        "DOWN": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
-        "LEFT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
-        "RIGHT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT
-    }
+class SpiceAPIWorker(QObject):
+    """Asynchronous SpiceAPI client for an unencrypted local connection."""
+    status_changed = Signal(bool, str)
+    api_error = Signal(str)
+
+    def __init__(self, host, port):
+        super().__init__()
+        self.host, self.port = host, int(port)
+        self.jobs, self.sock, self.request_id = queue.Queue(), None, 0
+        self.running = True
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def submit(self, module, function, params=None):
+        if self.running:
+            self.jobs.put((module, function, params or []))
+
+    def keypad_set(self, keypad, keys=""):
+        self.submit("keypads", "set", [int(keypad), *list(keys)])
+
+    def button_write(self, name, pressed=True):
+        self.submit("buttons", "write", [[name, 1.0 if pressed else 0.0]])
+
+    def button_reset(self, name):
+        # Current Spice2x expects each reset name wrapped in its own array.
+        self.submit("buttons", "write_reset", [[name]])
+
+    def button_release(self, name):
+        # Explicitly release first, then remove the override. If reset ever
+        # fails, the remaining override is still safely in the released state.
+        self.button_write(name, False)
+        self.button_reset(name)
+
+    def coin_insert(self):
+        self.submit("coin", "insert")
+
+    def _connect(self):
+        self._close_socket()
+        self.sock = socket.create_connection((self.host, self.port), timeout=1.5)
+        self.sock.settimeout(2.0)
+        self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        self.status_changed.emit(True, f"SpiceAPI connected: {self.host}:{self.port}")
+
+    def _request(self, module, function, params):
+        if self.sock is None:
+            self._connect()
+        self.request_id = (self.request_id + 1) % (2 ** 64)
+        body = {"id": self.request_id, "module": module,
+                "function": function, "params": params}
+        self.sock.sendall(json.dumps(body, separators=(",", ":")).encode("utf-8") + b"\0")
+        response = bytearray()
+        while not response or response[-1] != 0:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("SpiceAPI closed the connection")
+            response.extend(chunk)
+        decoded = json.loads(response[:-1].decode("utf-8"))
+        if decoded.get("id") != self.request_id:
+            raise RuntimeError("SpiceAPI response ID mismatch")
+        if decoded.get("errors"):
+            raise RuntimeError("; ".join(map(str, decoded["errors"])))
+
+    def _run(self):
+        while self.running:
+            job = self.jobs.get()
+            if job is None:
+                break
+            try:
+                self._request(*job)
+            except Exception as exc:
+                self._close_socket()
+                self.status_changed.emit(False, "SpiceAPI disconnected")
+                self.api_error.emit(str(exc))
+
+    def _close_socket(self):
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass
+            self.sock = None
+
+    def close(self):
+        self.running = False
+        self.jobs.put(None)
+        self._close_socket()
+
+
+class VideoCanvas(QGraphicsView):
+    """GPU-backed scene video surface that remains below normal Qt controls."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.video_scene = QGraphicsScene(self)
+        self.video_item = QGraphicsVideoItem()
+        self.video_item.setAspectRatioMode(Qt.IgnoreAspectRatio)
+        self.video_scene.addItem(self.video_item)
+        self.setScene(self.video_scene)
+        self.setSceneRect(0, 0, self.width(), self.height())
+        self.setFrameShape(QFrame.NoFrame)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setStyleSheet("background:black;border:0;")
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.viewport().setAttribute(Qt.WA_TransparentForMouseEvents)
+
+    def clear_frame(self):
+        self.video_scene.invalidate()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        size = QSizeF(self.viewport().size())
+        self.video_item.setSize(size)
+        self.setSceneRect(0, 0, size.width(), size.height())
+
+
+class BackgroundSelector(QWidget):
+    """Dropdown-style selector that stays inside the no-activate main window."""
+    changed = Signal(int)
+
+    def __init__(self, names, parent=None):
+        super().__init__(parent)
+        self.names = names
+        self.setFixedSize(500, 80)
+
+        self.button = QPushButton(names[0] if names else "No backgrounds found", self)
+        self.button.setGeometry(0, 0, 500, 80)
+        self.button.setFocusPolicy(Qt.NoFocus)
+        self.button.clicked.connect(self.toggle_list)
+
+        self.list_widget = QListWidget(self)
+        self.list_widget.setGeometry(0, 80, 500, 420)
+        self.list_widget.addItems(names)
+        self.list_widget.setFocusPolicy(Qt.NoFocus)
+        self.list_widget.itemClicked.connect(self.select_item)
+        self.list_widget.hide()
+
+        self.setStyleSheet("""
+        QPushButton, QListWidget {
+            background-color: rgba(0,0,0,225);
+            color: white;
+            border: 3px solid white;
+            border-radius: 10px;
+            padding: 10px 15px;
+            font-size: 28px;
+            font-weight: bold;
+            text-align: left;
+        }
+        QListWidget::item { min-height: 58px; padding-left: 8px; }
+        QListWidget::item:selected { background-color: rgba(255,0,0,180); }
+        """)
+
+    def toggle_list(self):
+        opening = not self.list_widget.isVisible()
+        self.setFixedHeight(500 if opening else 80)
+        self.list_widget.setVisible(opening)
+        if opening:
+            self.raise_()
+
+    def select_item(self, item):
+        index = self.list_widget.row(item)
+        self.button.setText(item.text())
+        self.list_widget.hide()
+        self.setFixedHeight(80)
+        self.changed.emit(index)
 
 class Btn(QLabel):
     def __init__(self, main_win, parent_widget, cfg, sx, sy, overlay_img_name="pressed.png", asset_dir="ui"):
@@ -60,8 +205,8 @@ class Btn(QLabel):
     def mousePressEvent(self, e):
         self.overlay = True
         self.update()
-        if "controller_button" in self.cfg:
-            self.main_win.press_btn(self.cfg["controller_button"])
+        if "action" in self.cfg:
+            self.main_win.trigger_action(self.cfg["action"])
         QTimer.singleShot(100, self.release_vis)
 
     def release_vis(self):
@@ -91,11 +236,22 @@ class Win(QWidget):
         if idx >= len(screens): idx = 0
         geo = screens[idx].geometry()
         self.setGeometry(geo)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setFocusPolicy(Qt.NoFocus)
 
         # 1. Main background label
         self.bg = QLabel(self)
         self.bg.setGeometry(self.rect())
+        self.video = VideoCanvas(self)
+        self.video.setGeometry(self.rect())
+        self.video.hide()
+        self.media_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.audio_output.setMuted(True)
+        self.media_player.setAudioOutput(self.audio_output)
+        self.media_player.setVideoOutput(self.video.video_item)
+        self.media_player.mediaStatusChanged.connect(self._video_status_changed)
 
         # 2. Dim Overlay for Concentration Mode
         self.dim_overlay = QWidget(self)
@@ -140,11 +296,6 @@ class Win(QWidget):
         self.ui_opacity_effect.setOpacity(1.0)
         self.ui_container.setGraphicsEffect(self.ui_opacity_effect)
 
-        # OpenCV Video setup
-        self.video_cap = None
-        self.video_timer = QTimer(self)
-        self.video_timer.timeout.connect(self.update_video_frame)
-
         self.backgrounds = []
         self.background_names = []
 
@@ -160,56 +311,24 @@ class Win(QWidget):
         self.bg_index = 0
         self.load_background()
 
-        # Dropdown UI
-        self.bg_dropdown = QComboBox(self.ui_container)
-        self.bg_dropdown.addItems(self.background_names)
+        # In-window selector: unlike QComboBox, this never creates an activating popup.
+        self.bg_dropdown = BackgroundSelector(self.background_names, self.ui_container)
         self.bg_dropdown.move(20, 20)
-        self.bg_dropdown.resize(500, 80)
-        self.bg_dropdown.view().setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.bg_dropdown.setStyleSheet("""
-        QComboBox {
-            background-color: rgba(0,0,0,220);
-            color: white;
-            border: 3px solid white;
-            border-radius: 10px;
-            padding-left: 15px;
-            font-size: 28px;
-            font-weight: bold;
-        }
-        QComboBox QAbstractItemView {
-            background-color: rgba(15, 15, 15, 240);
-            color: white;
-            border: 2px solid white;
-            selection-background-color: rgba(255, 0, 0, 150);
-            font-size: 24px;
-        }
-        QScrollBar:vertical {
-            background-color: rgba(30, 30, 30, 200);
-            width: 30px;
-            margin: 0px;
-        }
-        QScrollBar::handle:vertical {
-            background-color: rgba(120, 120, 120, 255);
-            min-height: 40px;
-            border-radius: 6px;
-            margin: 4px;
-        }
-        QScrollBar::handle:vertical:hover {
-            background-color: rgba(180, 180, 180, 255);
-        }
-        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-            background: none;
-            height: 0px;
-        }
-        """)
-        self.bg_dropdown.currentIndexChanged.connect(self.change_background)
+        self.bg_dropdown.changed.connect(self.change_background)
 
-        self.gamepad = None
-        if GAMEPAD:
-            try:
-                self.gamepad = vg.VX360Gamepad()
-            except Exception:
-                pass
+        api_cfg = self.config.get("spiceapi", {})
+        self.log_cfg = self.config.get("logging", {})
+        self.spice = SpiceAPIWorker(api_cfg.get("host", "127.0.0.1"),
+                                    api_cfg.get("port", 1337))
+        self.spice.status_changed.connect(self.update_api_status)
+        self.spice.api_error.connect(self.report_api_error)
+
+        self.api_status = QLabel("SpiceAPI: waiting for first button press", self.ui_container)
+        self.api_status.setStyleSheet(
+            "background:rgba(0,0,0,180);color:#ffcc66;padding:8px;font-size:18px;")
+        self.api_status.adjustSize()
+        self.api_status.move(20, 110)
+        self.api_status.setVisible(self.log_cfg.get("show_status_overlay", True))
 
         overlay_img = self.config.get("pressed_overlay_image", "pressed.png")
 
@@ -226,7 +345,7 @@ class Win(QWidget):
         self.extras_visible = not self.config.get("extras_hidden_on_startup", True)
         self.update_extras()
 
-        default_toggle = {"image": "system_toggle.png", "x": 1650, "y": 100, "controller_button": "UP"}
+        default_toggle = {"image": "system_toggle.png", "x": 1650, "y": 100}
         toggle_cfg = self.config.get("toggle_button", default_toggle)
         self.toggle_btn = Btn(self, self.ui_container, toggle_cfg, sx, sy, overlay_img)
         self.toggle_btn.mousePressEvent = lambda e: self.toggle_extras()
@@ -255,7 +374,41 @@ class Win(QWidget):
         QApplication.instance().installEventFilter(self)
 
         self.showFullScreen()
+        self.apply_no_activate_style()
         self.reset_idle_timer()
+
+    def apply_no_activate_style(self):
+        if sys.platform != "win32":
+            return
+        hwnd = int(self.winId())
+        user32 = ctypes.windll.user32
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        style = user32.GetWindowLongPtrW(hwnd, -20)
+        user32.SetWindowLongPtrW(hwnd, -20, style | 0x08000000)  # WS_EX_NOACTIVATE
+
+    def update_api_status(self, connected, message):
+        color = "#73ff8a" if connected else "#ffcc66"
+        self.api_status.setText(message)
+        self.api_status.setStyleSheet(
+            f"background:rgba(0,0,0,180);color:{color};padding:8px;font-size:18px;")
+        self.api_status.adjustSize()
+
+    def report_api_error(self, message):
+        if self.log_cfg.get("print_api_errors", True):
+            print(f"SpiceAPI: {message}", file=sys.stderr)
+
+    def nativeEvent(self, event_type, message):
+        if sys.platform == "win32":
+            from ctypes import wintypes
+            class MSG(ctypes.Structure):
+                _fields_ = [("hwnd", wintypes.HWND), ("message", wintypes.UINT),
+                            ("wParam", wintypes.WPARAM), ("lParam", wintypes.LPARAM),
+                            ("time", wintypes.DWORD), ("pt", wintypes.POINT)]
+            msg = ctypes.cast(int(message), ctypes.POINTER(MSG)).contents
+            if msg.message == 0x0021:  # WM_MOUSEACTIVATE
+                return True, 3  # MA_NOACTIVATE
+        return super().nativeEvent(event_type, message)
 
     def eventFilter(self, watched, event):
         t = event.type()
@@ -313,10 +466,10 @@ class Win(QWidget):
         self.load_background()
 
     def load_background(self):
-        self.video_timer.stop()
-        if self.video_cap is not None:
-            self.video_cap.release()
-            self.video_cap = None
+        self.media_player.stop()
+        self.video.clear_frame()
+        self.video.hide()
+        self.bg.show()
 
         if not self.backgrounds:
             self.bg.setStyleSheet("background:black;")
@@ -326,10 +479,11 @@ class Win(QWidget):
         ext = file.suffix.lower()
 
         if ext in (".mp4", ".webm"):
-            self.video_cap = cv2.VideoCapture(str(file.resolve()))
-            fps = self.video_cap.get(cv2.CAP_PROP_FPS)
-            interval = int(1000 / fps) if fps > 0 else 33 
-            self.video_timer.start(interval)
+            self.bg.hide()
+            self.video.show()
+            self.video.lower()
+            self.media_player.setSource(QUrl.fromLocalFile(str(file.resolve())))
+            self.media_player.play()
         else:
             self.bg.setPixmap(QPixmap(str(file)).scaled(
                 self.size(),
@@ -337,47 +491,28 @@ class Win(QWidget):
                 Qt.SmoothTransformation
             ))
 
-    def update_video_frame(self):
-        if self.video_cap is None or not self.video_cap.isOpened():
-            return
+    def _video_status_changed(self, status):
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self.media_player.setPosition(0)
+            self.media_player.play()
 
-        ret, frame = self.video_cap.read()
-        
-        if not ret:
-            self.video_cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            ret, frame = self.video_cap.read()
-            if not ret:
-                return
-
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = frame.shape
-        bytes_per_line = ch * w
-
-        qimg = QImage(frame.data, w, h, bytes_per_line, QImage.Format_RGB888)
-        pixmap = QPixmap.fromImage(qimg).scaled(
-            self.size(),
-            Qt.IgnoreAspectRatio,
-            Qt.SmoothTransformation
-        )
-        
-        self.bg.setPixmap(pixmap)
-
-    def press_btn(self, name):
-        if not self.gamepad or name not in BUTTON_MAP:
-            return
-        btn = BUTTON_MAP[name]
-        self.gamepad.press_button(button=btn)
-        self.gamepad.update()
-        QTimer.singleShot(60, lambda: self.release_btn(btn))
-
-    def release_btn(self, btn):
-        self.gamepad.release_button(button=btn)
-        self.gamepad.update()
+    def trigger_action(self, action):
+        action_type = action.get("type", "")
+        if action_type == "keypad":
+            keypad, key = int(action.get("keypad", 0)), str(action.get("key", ""))
+            self.spice.keypad_set(keypad, key)
+            QTimer.singleShot(75, lambda: self.spice.keypad_set(keypad, ""))
+        elif action_type == "button":
+            name = str(action.get("name", ""))
+            if name:
+                self.spice.button_write(name, True)
+                QTimer.singleShot(75, lambda: self.spice.button_release(name))
+        elif action_type == "coin":
+            self.spice.coin_insert()
 
     def closeEvent(self, event):
-        self.video_timer.stop()
-        if self.video_cap is not None:
-            self.video_cap.release()
+        self.media_player.stop()
+        self.spice.close()
         super().closeEvent(event)
 
 app = QApplication(sys.argv)

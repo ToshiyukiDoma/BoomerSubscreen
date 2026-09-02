@@ -7,30 +7,35 @@
 - You can hide the system buttons which are the Test, Service, and Coin buttons.
 - Multiple Custom Backgrounds (Image and/or Video are supported)
 - Interchangeable backgrounds while the app is running
-- Running on Virtual Joypad baked into the application
+- GPU-backed Qt video rendering without per-frame CPU image conversion
+- Sends keypad and operator controls directly through SpiceAPI
+- Windows no-activate mode for testing with exclusive fullscreen
 - Customizable buttons. You can also relocate them anywhere on the screen by editing the config.json
 - Concentration Mode: The UI elements will disappear except for the background and will dim depending on your timeout and dim preference.
 
 ## Usage:
-- Set your sound voltex to borderless fullscreen
+- Add `-api 1337` to the Spice2x options. Leave API Password empty for this first test build.
 - Open and modify config.json to
     - Configure your background directory (Set by default at backgrounds)
     - Set which monitor it will open to (Set by default at 1)
-- Run the Boomer Subscreen first
-- Configure the buttons to Spice2x
-- Run the game you're playing
+    - Set `logging.show_status_overlay` and `logging.print_api_errors` to control logs
+- Double-click `QUICK_START.bat`
+- Run Sound Voltex through Spice2x
+- Press a subscreen button once and confirm the status changes to `SpiceAPI connected`
+- Test exclusive fullscreen. Touching keypad/Test/Service/Coin should not activate this window.
 - Enjoy gaem
 - Nice one
 
 ## Issues:
 - It will not work with konasute
-- It is a requirement to play the game on borderless fullscreen because it's a separate application, not a plugin
+- SpiceAPI passwords are not supported in this initial test build.
+- The background selector is rendered inside the subscreen window and can be used during exclusive fullscreen.
 
 
 ## DIY Build
 ```
 pip install -r requirements.txt
-pyinstaller --noconsole --onefile --name "OjiisanSubscreen" --icon="icon.ico" --collect-all vgamepad OjiisanSubscreen.py
+pyinstaller --noconsole --onefile --name "OjiisanSubscreen" --icon="icon.ico" --collect-all PySide6 OjiisanSubscreen.py
 ```
 
 
