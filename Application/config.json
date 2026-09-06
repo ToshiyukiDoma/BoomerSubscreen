@@ -1,0 +1,192 @@
+{
+  "monitor": 2,
+  "reference_width": 1920,
+  "reference_height": 1080,
+  "background_directory": "backgrounds",
+  "selected_background": "",
+  "pressed_overlay_image": "pressed.png",
+  "spiceapi": {
+    "host": "127.0.0.1",
+    "port": 1337
+  },
+  "logging": {
+    "show_status_overlay": false,
+    "print_api_errors": false
+  },
+  "concentration_mode": {
+    "enabled": false,
+    "timeout_seconds": 30,
+    "dim_opacity": 0.75,
+    "panel_x": 140,
+    "image": "concentration.png",
+    "x": 800,
+    "y": 850,
+    "timeout_slider": {
+      "minimum": 5,
+      "maximum": 300,
+      "start_x": 206,
+      "start_y": 718,
+      "end_x": 206,
+      "end_y": 194,
+      "track_image": "settings_sliderbase.png",
+      "track_x": 197,
+      "track_y": 213,
+      "track_width": 152,
+      "track_height": 590,
+      "native_asset_size": true,
+      "start_offset_x": 76,
+      "start_offset_y": 558,
+      "end_offset_x": 76,
+      "end_offset_y": 34,
+      "handle_image": "settings_slidertick.png",
+      "handle_width": 108,
+      "handle_height": 32
+    },
+    "dim_slider": {
+      "minimum": 0,
+      "maximum": 100,
+      "start_x": 466,
+      "start_y": 718,
+      "end_x": 466,
+      "end_y": 194,
+      "track_image": "settings_sliderbase.png",
+      "track_x": 456,
+      "track_y": 213,
+      "track_width": 152,
+      "track_height": 590,
+      "native_asset_size": true,
+      "start_offset_x": 76,
+      "start_offset_y": 558,
+      "end_offset_x": 76,
+      "end_offset_y": 34,
+      "handle_image": "settings_slidertick.png",
+      "handle_width": 108,
+      "handle_height": 32
+    }
+  },
+  "navigation": {
+    "home_y": 12,
+    "menu_gap": 20,
+    "menu_bottom_margin": 24
+  },
+  "floating_keypad": {
+    "x": 100,
+    "y": 430,
+    "scale": 0.9,
+    "player": 1,
+    "slide_direction": "left",
+    "animation_duration_ms": 800,
+    "slide_distance": 430,
+    "panel_image": "tenkey_panel.png",
+    "key_image": "key_tenkey_num.png",
+    "key_current_image": "key_tenkey_num_current.png",
+    "number_image_pattern": "tenkey_num_{number}.png",
+    "toggle_image": "tenkey_mini.png",
+    "toggle_current_image": "tenkey_mini_current.png",
+    "toggle_x": 25,
+    "toggle_y": 20,
+    "toggle_size": 86,
+    "keys": [
+      {
+        "digit": "7",
+        "x": 22,
+        "y": 86
+      },
+      {
+        "digit": "8",
+        "x": 123,
+        "y": 86
+      },
+      {
+        "digit": "9",
+        "x": 224,
+        "y": 86
+      },
+      {
+        "digit": "4",
+        "x": 22,
+        "y": 187
+      },
+      {
+        "digit": "5",
+        "x": 123,
+        "y": 187
+      },
+      {
+        "digit": "6",
+        "x": 224,
+        "y": 187
+      },
+      {
+        "digit": "1",
+        "x": 22,
+        "y": 288
+      },
+      {
+        "digit": "2",
+        "x": 123,
+        "y": 288
+      },
+      {
+        "digit": "3",
+        "x": 224,
+        "y": 288
+      },
+      {
+        "digit": "0",
+        "x": 123,
+        "y": 389
+      }
+    ]
+  },
+  "iidx_player2_keypad": {
+    "enabled": true,
+    "player": 2,
+    "x": 1510,
+    "y": 430,
+    "scale": 0.9,
+    "slide_direction": "right",
+    "animation_duration_ms": 800,
+    "slide_distance": 430,
+    "toggle_x": 1809,
+    "toggle_y": 20
+  },
+  "extra_buttons": [
+    {
+      "image": "coin.png",
+      "x": 1650,
+      "y": 625,
+      "action": {
+        "type": "coin"
+      }
+    },
+    {
+      "image": "service.png",
+      "x": 1650,
+      "y": 450,
+      "action": {
+        "type": "button",
+        "name": "Service"
+      }
+    },
+    {
+      "image": "test.png",
+      "x": 1650,
+      "y": 275,
+      "action": {
+        "type": "button",
+        "name": "Test"
+      }
+    }
+  ],
+  "iidx_sfx": {
+    "gap": 0,
+    "start_y": 301,
+    "end_y": 21
+  },
+  "game_mode": "iidx",
+  "application_resolution": {
+    "width": 0,
+    "height": 0
+  }
+}

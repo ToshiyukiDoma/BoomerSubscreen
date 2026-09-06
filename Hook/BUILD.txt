@@ -1,0 +1,5 @@
+Compile ojiisansubscreen.c and cJSON.c as a Windows DLL.
+Zig 0.13.0 commands:
+zig cc -target x86-windows-gnu -shared -Os -s ojiisansubscreen.c cJSON.c -o ojiisansubscreen.dll
+zig cc -target x86_64-windows-gnu -shared -Os -s ojiisansubscreen.c cJSON.c -o ojiisansubscreen.dll
+Keep the outputs in separate architecture folders.
